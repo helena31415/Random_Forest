@@ -133,3 +133,12 @@ Export.image.toDrive({
   region: roi,
   maxPixels: 1e13
 })
+
+// Generate a confusion matrix
+var confusionMatrix = ee.ConfusionMatrix(input_features.aggregate_array('landcover'), classificado);
+
+// Get Kappa coefficient
+var kappa = confusionMatrix.kappa();
+
+// Print the Kappa coefficient
+print('Kappa Coefficient:', kappa);
