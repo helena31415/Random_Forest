@@ -1,0 +1,135 @@
+// 1° Definir o ROI (área de estudos)
+// Carrega a região de interesse (ROI) dos municípios do RJ, que foi importada previamente como um asset
+var roi = ee.FeatureCollection('projects/ee-helenacoelho02/assets/LM_ERJ_25000_dissolve');
+
+// Carregar a coleção de imagens Sentinel-2, selecionar bandas específicas e aplicar filtros
+var sentinel2 = ee.ImageCollection('COPERNICUS/S2')
+  .filterBounds(roi) // Área de estudos
+  .filterDate('2024-01-01', '2024-5-30') // Data de início e fim
+  .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 0)) // Imagens com 0% de nuvens
+  .select(['B2', 'B3', 'B4', 'B8', 'B11','B12']) 
+  .mean() // Cria um mosaico de cenas para cobrir a área caso necessário
+  .clip(roi); // Recorta o mosaico ao ROI
+
+// Centralizar o mapa no ROI e adicionar camada RGB (Bandas 4, 3 e 2) ao mapa
+Map.centerObject(roi, 8);
+Map.addLayer(roi, {}, 'ROI');
+Map.addLayer(sentinel2, {bands: ['B4', 'B3', 'B2'], min: 1405, max: 2990}, 'Sentinel2-RGB');
+
+var agua = ee.Feature(agua, {landcover: 2});
+var agropasto = ee.Feature(agropasto, {landcover: 4});
+var mangue = ee.Feature(mangue, {landcover: 5});
+var urbano = ee.Feature(urbano, {landcover: 3});
+var floresta = ee.Feature(floresta, {landcover: 1});
+
+// 3. Crie uma FeatureCollection com todas as classes
+var amostras = ee.FeatureCollection([agua, agropasto, mangue, urbano, floresta]);
+
+//////////////////INDICES/////////////////////
+
+var ndvi = sentinel2.normalizedDifference(['B8', 'B4']).rename('NDVI');
+
+// Calcular o NDWI
+var ndwi = sentinel2.normalizedDifference(['B3', 'B8']).rename('NDWI');
+
+// Calcular o NDBI
+var ndbi = sentinel2.normalizedDifference(['B11', 'B8']).rename('NDBI');
+
+// Adicionar bandas NDVI, NDWI e NDBI à imagem (composite)
+// [importante que essa seja a imagem a ser chamada lá embaixo!]
+var imageWithIndices = sentinel2.addBands([ndvi, ndwi, ndbi]);
+//Map.addLayer(imageWithIndices, {bands: ['B4', 'B3', 'B2'], min: 1405, max: 2990}, 'Sentinel2 com Índices');
+
+////////////////////
+
+//var composition843 = imageWithIndices.select(['B8', 'B4', 'B3']); // Vegetação 
+//var composition483 = imageWithIndices.select(['B4', 'B8', 'B3']); // Saúde da vegetação
+//var composition12118A = imageWithIndices.select(['B12', 'B11', 'B8']); // Solos, umidade, vegetação e queimadas
+//var composition1243 = imageWithIndices.select(['B12', 'B4', 'B3']); // Áreas urbanas, solos expostos e construções
+//var composition1284 = imageWithIndices.select(['B12', 'B8', 'B4']); // Pastagem e vegetação
+
+// Adiciona as composições coloridas ao mapa.
+//Map.addLayer(composition843, {min: 1228, max: 2690}, 'Composition 843');
+//Map.addLayer(composition483, {min: 1228, max: 2690}, 'Composition 483');
+//Map.addLayer(composition12118A, {min: 1228, max: 2690}, 'Composition 12118A');
+//Map.addLayer(composition1243, {min: 1228, max: 2690}, 'Composition 1243'); 
+//Map.addLayer(composition1284, {min: 1228, max: 2690}, 'Composition 1284');
+
+/////////////////
+
+/////////////AMOSTRAGEM DO CLASSIFICADOR
+// Amostrar as regiões utilizando a imagem com as bandas adicionadas
+var input_features = imageWithIndices.sampleRegions({
+  collection: amostras,
+  properties: ['landcover'],
+  scale: 30
+});
+
+//////////////// RANDOM FOREST////////////////////////////
+// Treinar o classificador Random Forest utilizando as bandas e índices adicionados
+var classifier = ee.Classifier.smileRandomForest(300).train({
+  features: input_features,
+  classProperty: 'landcover', //ESSA É A PROPRIEDADE QUE CADA CLASSE DEVERÁ TER!
+  inputProperties: ['B2', 'B3', 'B4', 'B8', 'B11', 'NDVI', 'NDWI', 'NDBI']
+});
+
+
+//Modelar/classificar com conjunto de dados de treinamento
+var classificado = imageWithIndices.classify(classifier);
+
+// Adicionar a imagem classificada ao mapa
+Map.addLayer(classificado, {min: 1, max: 5, palette: ['green', 'blue', 'red', 'yellow', 'black']}, 'Classificação');
+
+//Exportar classificação
+Export.image.toDrive({
+  image: classificado,
+  description: 'classificacao_RF',
+  folder: 'GEE',
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+})
+// Adicionar legenda ao mapa
+var legend = ui.Panel({style: {position: 'bottom-left'}});
+var title = ui.Label('Legenda de Classes', {fontWeight: 'bold', fontSize: '16px', color: 'black'});
+legend.add(title);
+
+// Definir classes e cores
+var classes = [
+  {name: 'Floresta', color: 'green'},
+  {name: 'Água', color: 'blue'},
+  {name: 'Urbano', color: 'red'},
+  {name: 'Agropasto', color: 'yellow'},
+  {name: 'Mangue', color: 'black'}
+];
+
+// Adicionar itens à legenda
+classes.forEach(function(item) {
+  var colorBox = ui.Label({
+    style: {backgroundColor: item.color, width: '20px', height: '20px', margin: '4px'}
+  });
+  var description = ui.Label(item.name);
+  legend.add(ui.Panel([colorBox, description], ui.Panel.Layout.Flow('horizontal')));
+});
+
+// Adicionar legenda ao mapa
+Map.add(legend);
+
+
+///APLICAR FILTRO ESPACIAL DE MODA
+//MAJORITY
+var geet = require('users/elacerda/geet:geet');
+var classificado_majority = geet.majority (classificado,2)
+
+Map.addLayer(classificado_majority, {min: 1, max: 6, palette: ['green', 'blue', 'red', 'yellow', 'black']}, 'Classificação Majority');
+
+
+//Exportar classificação
+Export.image.toDrive({
+  image: classificado_majority,
+  description: 'classificacao_RF_majority',
+  folder: 'GEE',
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+})
